@@ -26,7 +26,7 @@ user ~/WAF/alpine_apache: docker build \
 	-f apache/Dockerfile-alpine-light .
 ```
 
-You'll need to lunch the application to be protected. Here we lunch DVWA on the port 80:
+You'll need to launch the application to be protected. Here we lunch DVWA on the port 80:
 ```bash
 user ~/WAF/alpine_apache: docker run \
 	-p 80:80 \
