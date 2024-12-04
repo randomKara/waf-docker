@@ -1,0 +1,228 @@
+ARG HTTPD_VERSION="n/a"
+
+ARG HTTPD_VERSION="2.4.62"
+
+FROM local-httpd:latest AS build
+
+ARG MODSEC2_VERSION="2.9.8"
+ARG LUA_VERSION="5.3"
+
+# see https://httpd.apache.org/docs/2.4/install.html#requirements
+RUN set -eux; \
+    apk add --no-cache --virtual .build-deps \
+    automake \
+    autoconf \
+    apr-dev \
+    apr-util-dev \
+    ca-certificates \
+    coreutils \
+    curl-dev \
+    dpkg-dev dpkg \
+    geoip-dev \
+    gcc \
+    g++ \
+    gnupg \
+    libc-dev \
+    libfuzzy2-dev \
+    libmaxminddb-dev \
+    libstdc++ \
+    linux-headers \
+    libtool \
+    lmdb-dev \
+    libxml2-dev \
+    lua${LUA_VERSION}-dev \
+    yajl-dev \
+    make \
+    openssl \
+    openssl-dev \
+    pcre-dev \
+    zlib-dev
+
+RUN set -eux; \
+    wget --quiet https://github.com/owasp-modsecurity/ModSecurity/archive/refs/tags/v${MODSEC2_VERSION}.tar.gz; \
+    tar -zxvf v${MODSEC2_VERSION}.tar.gz; \
+    cd ModSecurity-${MODSEC2_VERSION}; \
+    ./autogen.sh; \
+    ./configure --with-yajl --with-ssdeep --with-lmdb; \
+    make; \
+    make install; \
+    make clean
+
+FROM local-httpd:latest AS crs_release
+
+ARG CRS_RELEASE="4.8.0"
+
+# hadolint ignore=DL3008,SC2016
+RUN set -eux; \
+    apk add --no-cache \
+        ca-certificates \
+        curl \
+        curl-dev \
+        gnupg; \
+    mkdir /opt/owasp-crs; \
+    curl -sSL https://github.com/coreruleset/coreruleset/releases/download/v${CRS_RELEASE}/coreruleset-${CRS_RELEASE}-minimal.tar.gz -o v${CRS_RELEASE}-minimal.tar.gz; \
+    curl -sSL https://github.com/coreruleset/coreruleset/releases/download/v${CRS_RELEASE}/coreruleset-${CRS_RELEASE}-minimal.tar.gz.asc -o coreruleset-${CRS_RELEASE}-minimal.tar.gz.asc; \
+    gpg --fetch-key https://coreruleset.org/security.asc; \
+    gpg --verify coreruleset-${CRS_RELEASE}-minimal.tar.gz.asc v${CRS_RELEASE}-minimal.tar.gz; \
+    tar -zxf v${CRS_RELEASE}-minimal.tar.gz --strip-components=1 -C /opt/owasp-crs; \
+    rm -f v${CRS_RELEASE}-minimal.tar.gz coreruleset-${CRS_RELEASE}-minimal.tar.gz.asc; \
+    mv -v /opt/owasp-crs/crs-setup.conf.example /opt/owasp-crs/crs-setup.conf
+
+# Étape 3 : Image finale minimale
+FROM alpine:3.20
+
+ARG MODSEC2_VERSION="2.9.8"
+ARG LUA_VERSION="5.3"
+ARG LUA_MODULES=["lua-lzlib","lua-socket"]
+
+# Installer les dépendances d'exécution ABSOLUMENT nécessaires pour Apache en tant que reverse proxy
+RUN apk add --no-cache \
+    apr \
+    apr-util \
+    ca-certificates \ 
+    pcre  \
+    libxml2 \
+    lua${LUA_VERSION} \
+    lua-socket \
+    lua-lzlib \
+    openssl \
+    curl \
+    libfuzzy2 \
+    sed \
+    yajl && \
+    rm -rf /var/cache/apk/* /tmp/*
+# SE LANCE PAS: yajl - sed - libfuzzy2 - 
+# SE LANCE: tzdata - moreutils - iproute2 - gnupg
+# Créer l'utilisateur www-data
+RUN adduser -u 82 -D -S -G www-data www-data
+
+# Créer le répertoire pour Apache
+ENV HTTPD_PREFIX=/usr/local/apache2
+ENV PATH=$HTTPD_PREFIX/bin:$PATH
+RUN mkdir -p $HTTPD_PREFIX && chown -R www-data:www-data $HTTPD_PREFIX
+
+COPY --from=local-httpd:latest /usr/local/apache2/ /usr/local/apache2/
+
+
+LABEL maintainer="Felipe Zipitria <felipe.zipitria@owasp.org>"
+
+ENV \
+    ACCESSLOG=/var/log/apache2/access.log \
+    APACHE_ALWAYS_TLS_REDIRECT=off \
+    APACHE_ERRORLOG_FORMAT='"[%{u}t] [%-m:%l] [pid %P:tid %T] %7F: %E: [client\ %a] %M% ,\ referer\ %{Referer}i"' \
+    APACHE_LOGFORMAT='"%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-agent}i\""' \
+    APACHE_METRICS_LOGFORMAT='"%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-agent}i\""' \
+    BACKEND=http://localhost:8080 \
+    BACKEND_WS=ws://localhost:8081 \
+    ERRORLOG='/proc/self/fd/2' \
+    H2_PROTOCOLS='h2 http/1.1' \
+    LOGLEVEL=warn \
+    METRICS_ALLOW_FROM='127.0.0.0/255.0.0.0 ::1/128' \
+    METRICS_DENY_FROM='All' \
+    METRICSLOG='/dev/null' \
+    MODSEC_ARGUMENT_SEPARATOR="&" \
+    MODSEC_ARGUMENTS_LIMIT=1000 \
+    MODSEC_AUDIT_ENGINE="RelevantOnly" \
+    MODSEC_AUDIT_LOG=/dev/stdout \
+    MODSEC_AUDIT_LOG_FORMAT=JSON \
+    MODSEC_AUDIT_LOG_PARTS='ABIJDEFHZ' \
+    MODSEC_AUDIT_LOG_RELEVANT_STATUS="^(?:5|4(?!04))" \
+    MODSEC_AUDIT_LOG_TYPE=Serial \
+    MODSEC_COOKIE_FORMAT=0 \
+    MODSEC_AUDIT_STORAGE_DIR=/var/log/modsecurity/audit/ \
+    MODSEC_DATA_DIR=/tmp/modsecurity/data \
+    MODSEC_DEBUG_LOG=/dev/null \
+    MODSEC_DEBUG_LOGLEVEL=0 \
+    MODSEC_DEFAULT_PHASE1_ACTION="phase:1,pass,log,tag:'\${MODSEC_TAG}'" \
+    MODSEC_DEFAULT_PHASE2_ACTION="phase:2,pass,log,tag:'\${MODSEC_TAG}'" \
+    MODSEC_DISABLE_BACKEND_COMPRESSION="On" \
+    MODSEC_PCRE_MATCH_LIMIT=100000 \
+    MODSEC_PCRE_MATCH_LIMIT_RECURSION=100000 \
+    MODSEC_REQ_BODY_ACCESS=on \
+    MODSEC_REQ_BODY_JSON_DEPTH_LIMIT=512 \
+    MODSEC_REQ_BODY_LIMIT=13107200 \
+    MODSEC_REQ_BODY_LIMIT_ACTION="Reject" \
+    MODSEC_REQ_BODY_NOFILES_LIMIT=131072 \
+    MODSEC_RESP_BODY_ACCESS=on \
+    MODSEC_RESP_BODY_LIMIT=1048576 \
+    MODSEC_RESP_BODY_LIMIT_ACTION="ProcessPartial" \
+    MODSEC_RESP_BODY_MIMETYPE="text/plain text/html text/xml" \
+    MODSEC_RULE_ENGINE=on \
+    MODSEC_SERVER_SIGNATURE="Apache" \
+    MODSEC_STATUS_ENGINE="Off" \
+    MODSEC_TAG=modsecurity \
+    MODSEC_TMP_DIR=/tmp/modsecurity/tmp \
+    MODSEC_TMP_SAVE_UPLOADED_FILES="on" \
+    MODSEC_UNICODE_MAPPING=20127 \
+    MODSEC_UPLOAD_DIR=/tmp/modsecurity/upload \
+    MODSEC_UPLOAD_FILE_MODE=0600 \
+    MODSEC_UPLOAD_KEEP_FILES=RelevantOnly \
+    MUTEX='default' \
+    PORT=8080 \
+    PROXY_ERROR_OVERRIDE=on \
+    PROXY_PRESERVE_HOST=on \
+    PROXY_SSL_CA_CERT=/etc/ssl/certs/ca-certificates.crt \
+    PROXY_SSL_CERT_KEY=/usr/local/apache2/conf/proxy.key \
+    PROXY_SSL_CERT=/usr/local/apache2/conf/proxy.crt \
+    PROXY_SSL_CHECK_PEER_NAME=off \
+    PROXY_SSL_CIPHERS="ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384" \
+    PROXY_SSL=off \
+    PROXY_SSL_PROTOCOLS="all -SSLv3 -TLSv1 -TLSv1.1" \
+    PROXY_SSL_VERIFY=none \
+    PROXY_TIMEOUT=60 \
+    REMOTEIP_INT_PROXY='10.1.0.0/16' \
+    REQ_HEADER_FORWARDED_PROTO='https' \
+    SERVER_ADMIN=root@localhost \
+    SERVER_NAME=localhost \
+    SERVER_SIGNATURE=Off \
+    SERVER_TOKENS=Full \
+    SSL_CERT_KEY=/usr/local/apache2/conf/server.key \
+    SSL_CERT=/usr/local/apache2/conf/server.crt \
+    SSL_CIPHERS="ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384" \
+    SSL_ENGINE=on \
+    SSL_HONOR_CIPHER_ORDER=off \
+    SSL_OCSP_STAPLING=On \
+    SSL_PORT=8443 \
+    SSL_PROTOCOLS="all -SSLv3 -TLSv1 -TLSv1.1" \
+    SSL_SESSION_TICKETS=off \
+    TIMEOUT=60 \
+    WORKER_CONNECTIONS=400 \
+    # CRS specific variables
+    PARANOIA=1 \
+    ANOMALY_INBOUND=5 \
+    ANOMALY_OUTBOUND=4 \
+    BLOCKING_PARANOIA=1
+
+COPY --from=build /usr/local/apache2/modules/mod_security2.so /usr/local/apache2/modules/mod_security2.so
+COPY --from=build /usr/local/apache2/ModSecurity-${MODSEC2_VERSION}/unicode.mapping /etc/modsecurity.d/unicode.mapping
+COPY --from=crs_release /opt/owasp-crs /opt/owasp-crs
+COPY src/etc/modsecurity.d/*.conf /etc/modsecurity.d/
+COPY src/bin/* /usr/local/bin/
+COPY src/opt/modsecurity/activate-*.sh /opt/modsecurity/
+COPY apache/conf/ /usr/local/apache2/conf/
+COPY apache/docker-entrypoint.sh /
+
+
+RUN addgroup -S httpd && adduser -SH httpd httpd
+
+RUN set -eux; \
+    ln -sv /opt/owasp-crs /etc/modsecurity.d/; \
+    mkdir -p /var/log/apache2; \
+    mkdir -p /tmp/modsecurity/data; \
+    mkdir -p /tmp/modsecurity/upload; \
+    mkdir -p /tmp/modsecurity/tmp; \
+    chown -R httpd:httpd \
+        /var/log/ \
+        /usr/local/apache2/ \
+        /etc/modsecurity.d \
+        /tmp/modsecurity \
+        /opt/owasp-crs
+
+USER httpd
+
+HEALTHCHECK CMD /usr/local/bin/healthcheck
+
+ENTRYPOINT ["/docker-entrypoint.sh"]
+
+# Define the startup command
+CMD ["/usr/local/apache2/bin/httpd", "-D", "FOREGROUND"]
