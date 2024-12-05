@@ -51,7 +51,7 @@ user ~/WAF/alpine_apache: docker run -d \
 | ------------------ | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | -d                 | detach                  | Run container in background and print container ID                                                                                                           |
 | --name             | name given              | Assign a name to the container                                                                                                                               |
-| -p                 | port use                | Port(s) to use by the application (/!\ don't use the same as DVWA). -p NN:MM means port NN on host machine will be link with port MM of the docker.          |
+| -p                 | port use                | Port(s) to use by the application (/!\ don't use the same as DVWA)                                                                                           |
 | -e BACKEND         | env variable definition | Where the proxy redirect                                                                                                                                     |
 | -e SERVER_NAME     | env variable definition | Where we want to access the application. Here it means if we go http://localhost:8080 we'll go to DVWA through the reverse proxy                             |
 | --link             | network link            | How we want to connect our application to reverse proxy. Here it means dvwa (the docker) will be accessible to http://dvwa **INSIDE** the modsecurity docker |

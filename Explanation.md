@@ -35,6 +35,7 @@ docker run -d \
 | -e SERVER_NAME                      | env variable definition | Where we want to access the application. Here it means if we go http://localhost:8080 we'll go to DVWA through the reverse proxy                             |
 | --link                              | network link            | How we want to connect our application to reverse proxy. Here it means dvwa (the docker) will be accessible to http://dvwa **INSIDE** the modsecurity docker |
 | owasp/modsecurity-crs:apache-alpine | image to use            | What image to pull (here, [this image](https://hub.docker.com/r/owasp/modsecurity-crs/))                                                                     |
+
 Note: strangely, we can't pull docker image if we don't have the web page opened.
 
 # Major issue
